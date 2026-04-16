@@ -1,0 +1,27 @@
+# Ambiente virtual
+.venv/
+
+# Dados brutos (não sobe dados para o GitHub)
+data/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Variáveis de ambiente e segredos
+.env
+*.env
+secrets.json
+
+# macOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
