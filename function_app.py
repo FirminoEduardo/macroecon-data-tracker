@@ -138,3 +138,70 @@ def extraction_timer(timer: func.TimerRequest) -> None:
         )
 
     logging.info('=== Extração concluída ===')
+
+def read_bronze(client: BlobServiceClient, blob_path: str) -> dict:
+    try:
+        blob_client = client.get_blob_client(container=CONTAINER_BRONZE, blob=blob_path)
+        data = blob_client.download_blob().readall()
+        return json.loads(data)
+    except Exception:
+        return None
+
+
+@app.timer_trigger(
+    schedule='0 30 1 * * *',  # Todo dia às 01:30 UTC
+    arg_name='timer_transform',
+    run_on_startup=False
+)
+def transformation_timer(timer_transform: func.TimerRequest) -> None:
+    import pandas as pd
+    import io
+
+    logging.info('=== Transformação iniciada ===')
+    target_date = date.today() - timedelta(days=1)
+    ano = target_date.strftime('%Y')
+    mes = target_date.strftime('%m')
+    dia = target_date.strftime('%d')
+
+    client = BlobServiceClient.from_connection_string(ADLS_CONNECTION_STRING)
+
+    # Lê yfinance — com forward fill para fins de semana
+    yf_data = read_bronze(client, f'yfinance/{ano}/{mes}/{dia}/brent.json')
+    forward_fill = False
+    if yf_data is None:
+        for days_back in range(1, 4):
+            past = target_date - timedelta(days=days_back)
+            yf_data = read_bronze(client, f'yfinance/{past.strftime("%Y")}/{past.strftime("%m")}/{past.strftime("%d")}/brent.json')
+            if yf_data:
+                forward_fill = True
+                logging.info(f'[transform] Forward fill: usando preço de {past}')
+                break
+
+    # Lê GDELT
+    gdelt_data = read_bronze(client, f'gdelt/{ano}/{mes}/{dia}/tone.json')
+
+    if not yf_data or not gdelt_data:
+        logging.warning(f'[transform] Dados incompletos para {target_date} — yfinance={bool(yf_data)}, gdelt={bool(gdelt_data)}')
+        return
+
+    # Join
+    record = {
+        'data': str(target_date),
+        'brent_preco_usd': yf_data['preco_fechamento_usd'],
+        'brent_forward_fill': forward_fill,
+        'gdelt_tone_score': gdelt_data['tone_score_medio'],
+        'gdelt_total_registros': gdelt_data['total_registros_horarios']
+    }
+    logging.info(f'[transform] {record}')
+
+    # Salva Parquet no Gold
+    df = pd.DataFrame([record])
+    buffer = io.BytesIO()
+    df.to_parquet(buffer, index=False, engine='pyarrow')
+    buffer.seek(0)
+
+    blob_path = f'combined/ano={ano}/mes={mes}/dia={dia}/data.parquet'
+    blob_client = client.get_blob_client(container='gold', blob=blob_path)
+    blob_client.upload_blob(buffer.read(), overwrite=True)
+    logging.info(f'[transform] Salvo em gold/{blob_path}')
+    logging.info('=== Transformação concluída ===')
