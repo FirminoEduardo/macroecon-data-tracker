@@ -1,0 +1,6 @@
+azure-functions
+yfinance
+requests
+pandas
+azure-storage-blob
+pyarrow
